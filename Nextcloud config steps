@@ -1,0 +1,273 @@
+How to Install NextCloud on Ubuntu 18.04 with Nginx (LEMP Stack)
+https://www.linuxbabe.com/ubuntu/install-nextcloud-ubuntu-18-04-nginx-lemp
+
+This tutorial will be showing you how to install NextCloud on Ubuntu 18.04 LTS with Nginx. As you may probably know, NextCloud is a free open-source self-hosted cloud storage solution that is forked from ownCloud. At the time of this writing, the latest stable version is NextCloud 13.0.2, which is compatible with PHP7.2.
+
+Prerequisites
+To follow this tutorial, you first need to install LEMP stack on Ubuntu 18.04. If you haven’t already done so, please check out the following tutorial.
+
+How to Install LEMP Stack (Nginx, MariaDB, PHP7.2-FPM) on Ubuntu 18.04
+https://www.linuxbabe.com/ubuntu/install-lemp-stack-nginx-mariadb-php7-2-ubuntu-18-04-lts
+
+///////Step 1: Download NextCloud 13 on Ubuntu 18.04
+## Login into your Ubuntu 18.04 server. Then download the NextCloud zip archive onto your server. The latest stable version is 13.0.2 at time of this writing. You may need to change the version number. Go to https://nextcloud.com/install and click the download button to see the latest version.
+
+## You can run the following command to download it on your server.
+
+  $     wget https://download.nextcloud.com/server/releases/nextcloud-13.0.2.zip
+  
+## Once downloaded, extract the archive with unzip.
+
+  $     sudo apt install unzip
+  $     sudo unzip nextcloud-13.0.2.zip -d /usr/share/nginx/
+## The -d option specifies the target directory. NextCloud web files will be extracted to /usr/share/nginx/nextcloud/.  Then we need to change the owner of this directory to www-data so that the web server (Nginx) can write to this directory.
+
+  $     sudo chown www-data:www-data /usr/share/nginx/nextcloud/ -R
+  
+///////Step 2: Create a Database and User in MariaDB
+## Log into MariaDB database server with the following command. Since MariaDB is now using unix_socket plugin to authentication user login, there’s no need to enter MariaDB root password. We just need to prefix the mysql command with sudo.
+
+  $     sudo mysql
+## Alternatively, you can also use this command to login.
+
+  $     sudo mariadb
+## Then create a database for Nextcloud. This tutorial name the database nextcloud. You can use whatever name you like.
+
+  $     create database nextcloud;
+## Create the database user. Again, you can use your preferred name for this user. Replace your-password with your preferred password.
+
+  $     create user nextclouduser@localhost identified by 'your-password';
+## Grant this user all privileges on the nextcloud database.
+
+  $     grant all privileges on nextcloud.* to nextclouduser@localhost identified by 'your-password';
+## Flush privileges and exit.
+
+  $     flush privileges;
+  $     exit;
+
+///////Step 3: Create a Nginx Config File for Nextcloud
+## Create a nextcloud.conf file in /etc/nginx/conf.d/ directory.
+
+  $     sudo nano /etc/nginx/conf.d/nextcloud.conf
+## Put the following text into the file. Replace the red-colored text with your actual data. Don’t forget to set A record for the domain name.
+
+  $     server {
+    listen 80;
+    server_name nextcloud.your-domain.com;
+
+    # Add headers to serve security related headers
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+    add_header X-Robots-Tag none;
+    add_header X-Download-Options noopen;
+    add_header X-Permitted-Cross-Domain-Policies none;
+
+    #This header is already set in PHP, so it is commented out here.
+    #add_header X-Frame-Options "SAMEORIGIN";
+
+    # Path to the root of your installation
+    root /usr/share/nginx/nextcloud/;
+
+    location = /robots.txt {
+        allow all;
+        log_not_found off;
+        access_log off;
+    }
+
+    # The following 2 rules are only needed for the user_webfinger app.
+    # Uncomment it if you're planning to use this app.
+    #rewrite ^/.well-known/host-meta /public.php?service=host-meta last;
+    #rewrite ^/.well-known/host-meta.json /public.php?service=host-meta-json
+    # last;
+
+    location = /.well-known/carddav {
+        return 301 $scheme://$host/remote.php/dav;
+    }
+    location = /.well-known/caldav {
+       return 301 $scheme://$host/remote.php/dav;
+    }
+
+    location ~ /.well-known/acme-challenge {
+      allow all;
+    }
+
+    # set max upload size
+    client_max_body_size 512M;
+    fastcgi_buffers 64 4K;
+
+    # Disable gzip to avoid the removal of the ETag header
+    gzip off;
+
+    # Uncomment if your server is build with the ngx_pagespeed module
+    # This module is currently not supported.
+    #pagespeed off;
+
+    error_page 403 /core/templates/403.php;
+    error_page 404 /core/templates/404.php;
+
+    location / {
+       rewrite ^ /index.php$uri;
+    }
+
+    location ~ ^/(?:build|tests|config|lib|3rdparty|templates|data)/ {
+       deny all;
+    }
+    location ~ ^/(?:\.|autotest|occ|issue|indie|db_|console) {
+       deny all;
+     }
+
+    location ~ ^/(?:index|remote|public|cron|core/ajax/update|status|ocs/v[12]|updater/.+|ocs-provider/.+|core/templates/40[34])\.php(?:$|/) {
+       include fastcgi_params;
+       fastcgi_split_path_info ^(.+\.php)(/.*)$;
+       fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+       fastcgi_param PATH_INFO $fastcgi_path_info;
+       #Avoid sending the security headers twice
+       fastcgi_param modHeadersAvailable true;
+       fastcgi_param front_controller_active true;
+       fastcgi_pass unix:/run/php/php7.2-fpm.sock;
+       fastcgi_intercept_errors on;
+       fastcgi_request_buffering off;
+    }
+
+    location ~ ^/(?:updater|ocs-provider)(?:$|/) {
+       try_files $uri/ =404;
+       index index.php;
+    }
+
+    # Adding the cache control header for js and css files
+    # Make sure it is BELOW the PHP block
+    location ~* \.(?:css|js)$ {
+        try_files $uri /index.php$uri$is_args$args;
+        add_header Cache-Control "public, max-age=7200";
+        # Add headers to serve security related headers (It is intended to
+        # have those duplicated to the ones above)
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+        add_header X-Robots-Tag none;
+        add_header X-Download-Options noopen;
+        add_header X-Permitted-Cross-Domain-Policies none;
+        # Optional: Don't log access to assets
+        access_log off;
+   }
+
+   location ~* \.(?:svg|gif|png|html|ttf|woff|ico|jpg|jpeg)$ {
+        try_files $uri /index.php$uri$is_args$args;
+        # Optional: Don't log access to other assets
+        access_log off;
+   }
+}
+
+## Save and close the file. Test Nginx configuration, then reload Nginx for the changes to take effect.
+
+  $     sudo nginx -t
+  $     sudo systemctl reload nginx
+  
+///////Step 4: Install and Enable PHP Modules
+## Run the following commands to install PHP modules required or recommended by NextCloud.
+
+  $     sudo apt install php-imagick php7.2-common php7.2-gd php7.2-json php7.2-curl  php7.2-zip php7.2-xml php7.2-mbstring php7.2-bz2 php7.2-intl
+
+///////Step 5: Enable HTTPS
+## Now you can access the Nextcloud web install wizard in your browser by entering the domain name for your Nextcloud installation.
+
+## nextcloud.your-domain.com
+
+## If the web page can’t load, you probably need to open port 80 in firewall.
+
+  $     sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+## And port 443 as well.
+
+  $     sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+
+## Before entering any sensitive information, we should enable secure HTTPS connection on Nextcloud. We can obtain a free TLS certificate from Let’s Encrypt. Install Let’s Encrypt client (certbot) from Ubuntu 18.04 repository.
+
+  $     sudo apt install certbot python3-certbot-nginx
+  
+## Python-certbot-nginx is the Nginx plugin. Next, run the following command to obtain a free TLS certificate using the Nginx plugin.
+
+  $     sudo certbot --nginx --agree-tos --redirect --hsts --staple-ocsp --email your-email-address -d nextcloud.your-domain.com
+  
+## Explanation:
+
+–nginx: Use the Nginx authenticator and installer
+–agree-tos: Agree to Let’s Encrypt terms of service
+–redirect: Add 301 redirect.
+–hsts: Add the Strict-Transport-Security header to every HTTP response.
+–staple-ocsp: Enables OCSP Stapling.
+-d flag is followed by a list of domain names, separated by comma. You can add up to 100 domain names.
+–email: Email used for registration and recovery contact.
+You will be asked if you want to receive emails from EFF(Electronic Frontier Foundation). After choosing Y or N, your TLS certificate will be automatically obtained and configured for you, which is indicated by the message below.
+
+## The Nginx plugin is not smart enough to handle such complex configuration file. It failed to redirect HTTP to HTTPS and the HSTS header wasn’t added. We can open the configuration file and enable these two features manually.
+
+  $     sudo nano /etc/nginx/conf.d/nextcloud.conf
+## To redirect HTTP to HTTPS, your Nginx configuration file needs to include a 301 redirect like below.
+
+  $     server {
+    listen 80;
+    server_name nextcloud.linuxbabe.com;
+    return 301 https://nextcloud.linuxbabe.com$request_uri;
+}
+
+server {
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/nextcloud.linuxbabe.com/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/nextcloud.linuxbabe.com/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+    ......  
+    ......
+    remaining configurations
+    ......
+}
+
+## We can then add the following line in the ssl server block to enable HSTS header.
+
+  $     add_header Strict-Transport-Security "max-age=31536000" always;
+## Also, you can enable HTTP2 protocol by adding the option http2.
+
+  $     listen 443 ssl http2; # managed by Certbot
+## Here’s part of the configurations on my server.
+ # See screenshot
+
+## Save and close the file. Then text Nginx configurations.
+
+  $     sudo nginx -t
+## If the test is successful, reload Nginx for the change to take effect.
+
+  $     sudo systemctl reload nginx
+## The above configuation will get A+ score on SSL test.
+
+////////Finish the Installation in your Web Browser
+## Now you can access the Nextcloud web install wizard using HTTPS connection. To complete the installation, you need to create an admin account, enter the path of Nextcloud data folder, enter database details created earlier. You can use the default localhost as host address, or you can enter localhost:3306, as MariaDB listens on port 3306.
+
+## The data folder is where users’ files are stored. For security, it’s best to place the data directory outside of Nextcloud web root. So instead of storing users’ files under /usr/share/nginx/nextcloud/data/, we can change it to /usr/share/nginx/nextcloud-data. which can be created with the following command:
+
+  $     sudo mkdir /usr/share/nginx/nextcloud-data
+## Then make sure Nginx user (www-data) has write permission to the data directory.
+
+  $     sudo chown www-data:www-data /usr/share/nginx/nextcloud-data -R
+
+## Once it’s done, you will see the Web interface of Nextcloud. Congrats! You can start using it as your private cloud storage.
+
+////////How to Move the Data Directory, if needed.
+## In case you need to move the NextCloud data directory, there are 4 steps to accomplish this. First, you need to use the cp command to copy the data directory to the new directory. For example, the mount point of my external hard drive is /media/linuxbabe/b43e4eea-9796-4ac6-9c48-2bcaa46353731. I create the new data directory on the external hard drive.
+
+  $     sudo mkdir /media/linuxbabe/b43e4eea-9796-4ac6-9c48-2bcaa46353731/nextcloud-data/
+## Then I copy the original data directory to the new data directory. -R flag means the copy operation is recursive.
+
+  $     sudo cp /usr/share/nginx/nextcloud-data/* /media/linuxbabe/b43e4eea-9796-4ac6-9c48-2bcaa46353731/nextcloud-data/ -R
+## You also need to copy the .ocdata file.
+
+  $     sudo cp /usr/share/nginx/nextcloud-data/.ocdata /media/linuxbabe/b43e4eea-9796-4ac6-9c48-2bcaa46353731/nextcloud-data/
+## Next, you need to set www-data (Nginx user) as the owner.
+
+  $     sudo chown www-data:www-data /media/linuxbabe/b43e4eea-9796-4ac6-9c48-2bcaa46353731/nextcloud-data/ -R
+## Lastly, you need to edit the config.php file.
+
+  $     sudo nano /usr/share/nginx/nextcloud/config/config.php
+## Find the following line and change the value of datadirectory.
+
+  $     'datadirectory' => '/usr/share/nginx/nextcloud-data',
+## Save and close the file. Reload NextCloud web page and you are done.
